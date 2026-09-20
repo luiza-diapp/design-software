@@ -31,7 +31,6 @@ O primeiro passo foi separar o que é funcionalidade comum do que realmente mexe
 
 | #  | Requisito | ASR? | Atributo | Impacto no design |
 | -- | --------- | ---- | -------- | ----------------- |
-| 4  | Devolver em qualquer estação | Sim | Consistência | A bicicleta não pode pertencer permanentemente a uma estação |
 | 7  | Não reservar em duplicidade | Sim | Integridade | Reserva precisa ser atômica |
 | 8  | Liberar reserva em 10 min | Sim | Confiabilidade | Precisa existir controle de expiração |
 | 9  | Resposta em até 2 s | Sim | Desempenho | Consulta precisa ser rápida |
@@ -45,16 +44,14 @@ O primeiro passo foi separar o que é funcionalidade comum do que realmente mexe
 Fora da tabela, há ainda a possibilidade de outros campi no futuro. Não é requisito, mas deixar `Campus` no modelo desde o começo custa quase nada agora e evita uma migração bem chata depois.
 
 ### Prioridade
+7, 11, 15, 10 
+7 — impedir reserva simultânea. É o único que afeta a corretude do sistema. Se duas pessoas reservam a mesma bicicleta, o usuário chega na estação e ela não está lá. A solução também define onde o estado da bicicleta pode ficar, o que limita todo o resto do design.
 
-A ordem seria 7 → 9 e 10 → 11 → 12 e 13.
+15 — só administradores alteram dados. Vale para todas as telas e APIs, inclusive as futuras. Como diz o que o sistema não pode permitir, precisa ser garantido pela estrutura, não por cuidado do programador. Deixar para depois obriga a mexer em todas as camadas.
 
-O 7 vem primeiro porque é o único que, se falhar, deixa o sistema simplesmente errado. Não há muito o que negociar aí: se duas pessoas conseguem reservar a mesma bicicleta, o resto não importa muito.
+11 — devolver mesmo com notificação fora do ar. Define como os serviços conversam. Se a devolução esperar pela notificação, cai junto com ela — e o usuário fica preso à bicicleta e à cobrança. Mudar de síncrono para assíncrono depois altera o contrato entre os módulos.
 
-Logo depois vêm o 9 e o 10, que entram meio em rota de colisão com o 7. Resolver a consistência colocando lock em tudo leva a escalabilidade junto. Por isso os três precisam ser decididos no mesmo momento, e não um de cada vez.
-
-O 11 é o que mais mexe na estrutura de dependências. Separar devolução de notificação no começo é fácil; descobrir seis meses depois que a operação inteira trava porque o servidor de e-mail caiu é bem menos.
-
-O 12 e o 13 entram por último, mas entram. O próprio enunciado avisa que essas duas coisas vão variar, então não é generalização especulativa — a mudança já está prevista, só não se sabe ainda em que formato.
+10 — 3.000 usuários no pico. Fica por último porque cache e réplicas podem ser ajustados depois. O que não dá para adiar é manter os serviços sem estado, senão a escala horizontal fica inviável.
 
 ---
 
@@ -116,15 +113,7 @@ WHERE id = 42
 ```
 **7. Essa decisão pode produzir algum trade-off relacionado a desempenho ou escalabilidade?Explique.**
 
-A busca de bicicletas disponíveis pode mostrar uma bike que já foi reservada segundos antes:
-
-```text
-10:00:00.000 -> usuário abre o mapa
-10:00:00.100 -> outra pessoa reserva a bike
-10:00:00.200 -> a primeira pessoa ainda vê a bike disponível
-```
-
-Isso não é grave. A consulta existe para mostrar opções rápido; quem decide de verdade é o banco na hora da reserva. Se a pessoa perder a corrida, o sistema responde algo como "essa bicicleta acabou de ser reservada, escolha outra" e a vida segue. Tentar deixar toda a leitura fortemente consistente sairia caro demais para o requisito de 2 segundos.
+Sim. O UPDATE condicional serializa o acesso à linha e obriga a reserva a ir ao banco primário, sem cache nem réplica — o que conflita com os requisitos de desempenho e escala. Mas o escopo é estreito: só concorrem requisições pela mesma bicicleta, e a transação dura milissegundos
 
 
 ## Parte 3 — Distribuição de responsabilidades
@@ -159,14 +148,14 @@ Considere também as seguintes responsabilidades:
 
 | Responsabilidade | O que você colocou | Avaliação |
 |---|---|---|
-| Consultar bicicletas disponíveis | `Bicicleta` | ⚠️ Melhor seria `Estacao` ou um serviço de consulta, porque a consulta envolve um conjunto de bicicletas. |
-| Verificar disponibilidade | `Bicicleta` | ✅ Certo. A bicicleta conhece seu próprio status. |
-| Reservar uma bicicleta | `Reserva` | ⚠️ Discutível. A `Reserva` ainda nem existe antes da operação. Melhor `Bicicleta` ou um coordenador de reservas. |
-| Cancelar uma reserva | `Reserva` | ✅ Muito bom. |
-| Controlar tempo de validade | `Reserva` | ✅ Faz sentido, embora o disparo automático possa ficar em um componente externo. |
-| Registrar retirada | `Viagem` | ✅ Faz sentido, principalmente se a retirada inicia a viagem. |
-| Registrar devolução | `Viagem` | ✅ Faz sentido, pois encerra a viagem. |
-| Registrar uma viagem | `Viagem` | ⚠️ Se "registrar" significar persistir no banco, seria melhor um `RepositorioViagens`. Se significar manter os dados da viagem, `Viagem` está ok. |
+| Consultar bicicletas disponíveis | `Estacao` |  |
+| Verificar disponibilidade | `Bicicleta` |  |
+| Reservar uma bicicleta | `Bicicleta` | Instancia Reserva |
+| Cancelar uma reserva | `Reserva` |  |
+| Controlar tempo de validade | `Reserva` | |
+| Registrar retirada | `Viagem` |  |
+| Registrar devolução | `Viagem` |  |
+| Registrar uma viagem | `RepositorioViagem` |  |
 | Calcular valor de utilização | `CalculoCusto` | ✅ Boa ideia. Eu só usaria um nome como `CalculadoraTarifa`. |
 | Identificar usuário | `Usuario` | ⚠️ O usuário pode guardar sua identidade, mas não deveria necessariamente ser responsável pelo mecanismo de identificação. |
 | Enviar confirmação | `Notificacao` | ✅ Faz bastante sentido. |
@@ -184,22 +173,10 @@ Considere, quando aplicável:
 - **Indirection**
 - **Protected Variations**
 
-*1 - ReservaService cria a Reserva — Controller*
-
-O ReservaService recebe a solicitação e coordena as etapas necessárias para realizar a reserva.
-
-*2- Bicicleta verifica disponibilidade — Information Expert*
-
-A própria Bicicleta conhece seu estado e sabe se está disponível ou não.
-
-*3- Notificação é feita por um componente específico — Indirection / Low Coupling*
-
-O domínio não precisa conhecer diretamente como a notificação é enviada, reduzindo o acoplamento.
-
-*4- Cálculo do custo fica em CalculadoraTarifa — High Cohesion / Protected Variations*
-
-A lógica de cálculo fica concentrada em um único componente e pode ser alterada sem afetar o restante do sistema.
-
+1 - bicicleta information expert verifica disponibilidade
+2 - bicicleta inicia um reserva creator
+3 - high cohesion calculocusto calcula o que deve e nao faz mais nada
+4 - protected variations vao existir varias formas de pagamento - pagamento
 
 ## Parte 4 — Quem cria a reserva?
 #### 1. Quem deveria ser responsável pela criação de uma `Reserva`?
@@ -269,202 +246,479 @@ Os princípios que aparecem aqui são basicamente Polymorphism (cada estratégia
 
 ## Parte 6 — Convencionais e elétricas
 
-A tentação inicial é resolver com uma flag:
+
+## Domínio de Bicicletas
+
+#### Requisitos de Atributos
+
+###### Bicicletas Convencionais
+Possuem os seguintes atributos:
+- `identificador`
+- `status`
+- `estacaoAtual`
+
+###### Bicicletas Elétricas
+Possuem adicionalmente:
+- `nivelBateria`
+- `autonomia`
+
+> **Regra de Negócio:** Uma bicicleta elétrica não pode ser liberada quando o nível de bateria estiver abaixo de 10%.
+
+---
+
+#### Sugestão de Implementação
+
+Um desenvolvedor sugere a seguinte estrutura em Java:
 
 ```java
-boolean eletrica;
-```
+public class Bicicleta {
+    private boolean eletrica;
+    private int nivelBateria;
 
-Começa simples e envelhece mal. Bicicleta convencional tem bateria? O que significa `0` — sem carga ou veículo sem bateria? E quando entrar patinete, vira isso:
-
-```java
-if (eletrica) {
-    ...
-}
-
-if (patinete) {
-    ...
-}
-```
-
-Duas flags já dão quatro combinações, e nem todas fazem sentido.
-
-A hierarquia é o caminho melhor:
-
-```java
-abstract class Veiculo {
-
-    public boolean podeSerRetirado() {
-        return status == DISPONIVEL &&
-               condicoesEspecificasAtendidas();
-    }
-
-    protected abstract boolean condicoesEspecificasAtendidas();
-}
-```
-
-A convencional é o caso trivial:
-
-```java
-class BicicletaConvencional extends Veiculo {
-
-    protected boolean condicoesEspecificasAtendidas() {
+    public boolean podeSerRetirada() {
+        if (eletrica) {
+            return nivelBateria >= 10;
+        }
         return true;
     }
 }
-```
+``` 
+### 1. Avaliação da solução
 
-E o elétrico delega a regra para uma política, porque o limite de bateria também é o tipo de coisa que muda:
+Funciona, mas tem problemas estruturais:
+
+- Bicicletas convencionais carregam `nivelBateria`, campo que não se aplica a elas. Permite estados inválidos (`eletrica = false` com `nivelBateria = 45`).
+- A flag `eletrica` é um tipo disfarçado de booleano — decidir comportamento por `if` de tipo é o que o polimorfismo existe para evitar.
+- O `if` tende a se repetir em todo método com comportamento variável (tarifa, manutenção, exibição).
+
+### 2. Problemas ao acrescentar novos tipos
+
+- Cada tipo novo exige **modificar** `Bicicleta`, classe que já funcionava.
+- O `if` vira `if/else if/else if`, replicado em vários métodos.
+- A classe acumula campos de todos os tipos, e cada instância usa poucos.
+- Um `boolean` deixa de bastar; troca-se por `enum` com `switch`, o que só adia o problema.
+
+### 3. Alternativa proposta
+
+Cada tipo responde pela própria regra:
 
 ```java
-abstract class VeiculoEletrico extends Veiculo {
+public abstract class Bicicleta {
+    protected String identificador;
+    protected StatusBicicleta status;
+    protected Estacao estacaoAtual;
 
+    public boolean podeSerRetirada() {
+        return status == StatusBicicleta.DISPONIVEL;
+    }
+}
+
+public class BicicletaConvencional extends Bicicleta { }
+
+public class BicicletaEletrica extends Bicicleta {
     private int nivelBateria;
-    private final PoliticaDeBateria politica;
+    private int autonomia;
 
-    protected boolean condicoesEspecificasAtendidas() {
-        return politica.suficienteParaLiberacao(nivelBateria);
+    @Override
+    public boolean podeSerRetirada() {
+        return super.podeSerRetirada() && nivelBateria >= 10;
     }
 }
 ```
 
-No fim, quem usa o objeto só chama `veiculo.podeSerRetirado()` e não pergunta se é bicicleta, patinete ou o que for.
-
-Uma ressalva sobre LSP: herança sozinha não garante nada. O compilador aceita `Patinete extends Veiculo` sem reclamar, e isso não quer dizer que o patinete possa ser usado em todo lugar onde se espera um `Veiculo`. A forma prática de verificar isso é escrever testes de contrato para o tipo base e rodar contra todas as subclasses — se alguma quebra, o problema é de modelagem, não de teste.
-
----
-
-## Parte 7 — Entrada dos patinetes
-
-Com `Veiculo` como abstração, a chegada dos patinetes não deveria obrigar a mexer em `ReservaService`, no mecanismo de concorrência, em `Reserva`, em `Viagem`, na identificação nem na notificação.
-
-O que precisaria ser feito: criar `PatineteEletrico`, definir as políticas específicas dele, ajustar persistência e dar suporte na UI.
-
-Só que aparece um detalhe novo que a abstração não cobre: nem toda vaga serve para qualquer veículo. Surge uma relação do tipo
-
-```text
-Vaga <-> Tipo de Veículo
-```
-
-e isso provavelmente muda o modelo de estações. Vale reconhecer isso em vez de fingir que o design absorve tudo. Um design bom não significa mudança zero; significa que a mudança fica concentrada nos lugares onde ela faz sentido, e não espalhada por dez classes.
-
----
-
-## Parte 8 — Notificações
-
-Mandar e-mail dentro da transação de devolução é uma péssima ideia:
-
-```text
-Usuário devolve a bicicleta
-        |
-Sistema registra devolução
-        |
-Servidor de e-mail demora 5 segundos
-```
-
-A operação toda passa a esperar uma chamada de rede que não tem nada a ver com o negócio. E se o e-mail falhar, fica pior ainda: a bicicleta já está fisicamente na estação, mas o sistema responde erro para o usuário. Situação péssima de explicar e pior ainda de corrigir.
-
-A saída é evento com Outbox:
-
-```text
-Usuário devolve
-       |
-Transação:
-  - encerra viagem
-  - estaciona veículo
-  - grava evento na OUTBOX
-       |
-     COMMIT
-       |
-Usuário recebe OK
-       |
-Processo em background -> Fila -> Consumidores (e-mail, push)
-```
-
-O ponto é que o caminho crítico termina no commit. A notificação acontece depois, no tempo dela.
-
-Publicar direto na fila dentro da transação seria possível, mas aí a devolução passa a depender da fila estar de pé. Publicar depois do commit também tem furo: se o processo cair entre o commit e a publicação, a notificação simplesmente some. A Outbox fecha essa lacuna porque o evento é gravado na mesma transação do dado.
-
-Isso tem custo, e vale ser honesto sobre ele. Passam a existir tabela de outbox, processo de publicação, fila, consumidores, retentativa, idempotência e monitoramento — tudo isso é código que alguém mantém. Num sistema menor, mandar o e-mail depois do commit com um `try/catch` provavelmente resolveria por um bom tempo. A fila começa a compensar quando aparecem vários consumidores ou uma necessidade real de escala, que é o caso aqui.
-
----
-
-## Parte 9 — SOLID
-
-**SRP.** Está razoavelmente bem aplicado: a devolução não manda e-mail e a viagem não conhece as regras de preço. O cuidado é com os serviços, que são justamente onde a bagunça costuma se acumular. `ReservaService` é o candidato mais provável a virar classe Deus se ninguém prestar atenção.
-
-**OCP.** É provavelmente o ponto mais forte do desenho. Método de identificação novo é implementação nova mais registro, sem tocar nas que já existem; o mesmo vale para as políticas de tarifação.
-
-**LSP.** Não dá para garantir olhando diagrama. Precisa de teste de comportamento nos subtipos. Se uma subclasse passa a exigir algo que o contrato original não exigia, ela quebra quem depende da abstração — e isso não aparece na compilação.
-
-**ISP.** Interfaces pequenas, e separação entre operações administrativas e operações normais do usuário. Isso também conversa com o requisito 15.
-
-**DIP.** O domínio trabalha com abstrações: repositórios, notificadores, relógio, políticas. A infraestrutura entrega as implementações. Existe uma exceção consciente no mecanismo de concorrência, porque a solução depende de uma operação específica do banco. Nesse caso, assumir o acoplamento é melhor do que inventar uma abstração enorme só para esconder um detalhe que é justamente o que faz o requisito funcionar.
-
----
-
-## Parte 10 — Arquitetura geral
-
-```text
-App Mobile / Web / Admin
-           |
-          API
-           |
-Serviços de Aplicação
-           |
-+------------------------+
-|        DOMÍNIO         |
-|  Veiculo   Usuario     |
-|  Reserva   Viagem      |
-+------------------------+
-           |
-   Interfaces / Portas
-      /          \
-   Banco       Eventos
-                  |
-                Fila
-                  |
-        +---------+---------+
-        |         |         |
-     E-mail     Push    Auditoria
-```
-
-A ideia por trás disso é simples: regra de negócio não deveria depender de banco, framework web ou provedor de e-mail. Essas coisas ficam nas bordas, onde podem ser trocadas sem drama.
-
-As decisões principais, resumindo:
-
-1. Reserva com atualização condicional no banco, para evitar duplicidade sem lock distribuído.
-2. Notificação assíncrona, para que problema de e-mail não bloqueie devolução.
-3. `Veiculo` como abstração, para evitar explosão de flags e condicionais.
-4. Políticas para identificação e cobrança, para que variação entre por extensão.
-5. Leitura otimizada separada da escrita: consulta rápida, decisão sempre no banco.
-6. `Campus` no modelo desde o início, para não pagar uma migração grande depois.
-
----
-
-## Parte 11 — A decisão mais controversa
-
-Sem dúvida é usar `ReservaService` com UPDATE condicional por bicicleta.
-
-A alternativa seria tratar a estação como agregado e pegar lock:
+O cliente não conhece o tipo:
 
 ```java
-Estacao estacao =
-    repositorio.buscarComLock(estacaoId);
-
-estacao.reservar(veiculoId, usuarioId, agora);
+if (bicicleta.podeSerRetirada()) { ... }
 ```
 
-Do ponto de vista de modelagem isso é mais bonito — a regra fica encapsulada dentro da estação, e o domínio ganha uma fronteira clara. O problema é o tamanho dessa fronteira. Se a estação inteira fica bloqueada enquanto alguém reserva uma bicicleta:
+O único `if` de tipo fica no repositório, ao criar o objeto a partir da linha do banco. Adicionar um tipo novo é criar uma classe, sem tocar no código existente.
 
-```text
-Ana   -> bike 42
-Bruno -> bike 43
-Carla -> bike 44
+### 4. Princípio GRASP
+
+**Polimorfismo** — quando o comportamento varia por tipo, use operações polimórficas em vez de condicionais.
+
+**Information Expert** (secundário) — a regra dos 10% depende de `nivelBateria`, então a decisão fica onde o dado está.
+
+### 5. Princípios SOLID
+
+- **Open/Closed** (principal): tipo novo passa a exigir extensão, não modificação.
+- **Single Responsibility**: cada classe muda por um motivo só.
+- **Liskov**: o cliente usa qualquer subtipo sem saber qual é.
+- **Interface Segregation**: justifica não expor `getNivelBateria()` na classe base.
+
+### 6. Herança garante o LSP?
+
+**Não.** Herança é mecanismo da linguagem; LSP é regra sobre como usá-la. O compilador aceita qualquer hierarquia, mas o LSP exige que a subclasse se comporte como a base do ponto de vista de quem a usa.
+
+Violação que compila normalmente:
+
+```java
+public class BicicletaEletrica extends Bicicleta {
+    @Override
+    public void retirar() {
+        if (nivelBateria < 10) throw new BateriaInsuficienteException();
+        super.retirar();
+    }
+}
 ```
 
-os três disputam o mesmo lock mesmo querendo veículos diferentes. É serializar operações que não têm relação nenhuma entre si. Com CAS por bicicleta, Ana e Bruno só disputam se pedirem a mesma bike.
+O cliente que chamava `retirar()` com segurança agora recebe exceção inesperada e passa a precisar de `instanceof` — o `if` que queríamos eliminar volta.
 
-A desvantagem honesta dessa escolha é que parte da garantia de exclusividade sai do domínio e vai para o banco. Para não deixar isso virar "regra em SQL", as regras de estado continuam nas entidades e o índice único entra apenas como restrição adicional. O serviço coordena, o domínio guarda as regras, e o banco só garante que a concorrência não corrompa o dado.
+A solução da questão 3 não viola porque a regra está numa **consulta** (`podeSerRetirada()`), cujo contrato sempre foi "responda se pode ou não". Muda *quando* retorna falso, não o que o método promete.
 
-Se a regra fosse outra — "uma estação pode ter no máximo N reservas simultâneas", por exemplo — aí sim a estação seria exatamente a fronteira certa, e o agregado se justificaria sem discussão. Também faria sentido se a concorrência fosse baixa. Mas com milhares de usuários e disputa acontecendo bicicleta a bicicleta, a atualização condicional por veículo é mais simples e escala melhor.
+Regras do LSP: a subclasse não pode exigir mais (pré-condição), entregar menos (pós-condição), nem lançar exceções que a base não previa.
+
+---
+
+## Parte 7 — Novo requisito: patinetes elétricos
+
+### Ponto de partida
+
+Patinete não é bicicleta — colocá-lo como subclasse de `Bicicleta` violaria o LSP. O conceito raiz estava errado: o sistema gerencia **veículos compartilhados**, não bicicletas.
+
+```java
+public abstract class Veiculo {
+    protected String identificador;
+    protected StatusVeiculo status;
+    protected Estacao estacaoAtual;
+
+    public boolean podeSerRetirado() {
+        return status == StatusVeiculo.DISPONIVEL;
+    }
+}
+
+public abstract class Bicicleta extends Veiculo { }
+public class BicicletaConvencional extends Bicicleta { }
+public class BicicletaEletrica extends Bicicleta { ... }
+
+public class PatineteEletrico extends Veiculo {
+    private int nivelBateria;
+    private int autonomia;
+
+    @Override
+    public boolean podeSerRetirado() {
+        return super.podeSerRetirado() && nivelBateria >= 20;
+    }
+}
+```
+
+### 1. O que precisa ser modificado
+
+- Hierarquia: introduzir `Veiculo` como raiz, `Bicicleta` vira um ramo
+- Repositório/fábrica: um caso novo no mapeamento tipo → classe
+- Banco: coluna de tipo na tabela de veículos
+- Nomenclatura: `RepositorioBicicletas` → `RepositorioVeiculos`
+
+Tudo isso é renomeação e reorganização. **Nenhuma regra de negócio existente muda.**
+
+### 2. O que permanece inalterado
+
+`ReservaService`, `RetiradaService`, `DevolucaoService`, o mecanismo de exclusão mútua (req. 7), a expiração de reserva (req. 8), `Reserva`, `Viagem`, `Usuario`, `Estacao` e `Notificador`.
+
+A regra de autorização do patinete mora só na classe dele — nenhum serviço precisa saber que ela existe.
+
+### 3. Serão necessários novos condicionais?
+
+Não. Só a fábrica ganha um ramo:
+
+```java
+return switch (linha.tipo) {
+    case "CONVENCIONAL" -> new BicicletaConvencional(...);
+    case "ELETRICA"     -> new BicicletaEletrica(...);
+    case "PATINETE"     -> new PatineteEletrico(...);   // única linha nova
+};
+```
+
+Com a solução original da flag `eletrica`, cada método com comportamento variável precisaria de um ramo novo — e um `boolean` nem comportaria três tipos.
+
+### 4. O design está preparado?
+
+**Parcialmente.**
+
+Está preparado para a variação de **comportamento**: a regra do patinete entra como classe nova, sem editar as existentes.
+
+Não estava preparado para a variação de **conceito**: a raiz escolhida (`Bicicleta`) era concreta demais, e precisou subir para `Veiculo`.
+
+O custo foi baixo — renomeação e um ramo na fábrica, sem tocar em regra de negócio.
+
+### 5. Relação com os princípios
+
+**Protected Variations** — `Veiculo` é a interface estável que protege o resto do sistema. Onde o ponto de variação foi previsto, a mudança custou uma classe; onde não foi, custou uma refatoração.
+
+**Polymorphism** — é o mecanismo que viabiliza a proteção. O cliente chama `podeSerRetirado()` e recebe a resposta certa sem testar tipo.
+
+**Open/Closed** — aberto: `PatineteEletrico` é classe nova. Fechado: os serviços não foram tocados. O fechamento não é total, e isso ilustra a formulação correta do princípio — você escolhe **contra qual eixo de variação** se fechar. Fechamos contra "novos tipos de veículo", não contra "novas categorias".
+
+---
+
+## Parte 8 — Serviço de notificações
+
+### 1. É adequado depender diretamente do serviço de e-mail?
+
+Não. Na sequência proposta, a devolução só termina depois que o e-mail é enviado — então se o servidor cair ou ficar lento, a devolução cai ou fica lenta junto. Uma operação **essencial** (devolver) ficou amarrada a uma **acessória** (avisar), e a disponibilidade da primeira passou a ser o produto das duas.
+
+### 2. ASR relacionado
+
+**Requisito 11** — devoluções continuam funcionando com o serviço de notificações indisponível.
+
+Atributo: **disponibilidade / tolerância a falhas**, com degradação graciosa.
+
+### 3. Tipo de acoplamento
+
+**Acoplamento temporal**: os dois componentes precisam estar disponíveis ao mesmo tempo.
+
+Somado ao **acoplamento de implementação**, se o serviço de devolução instancia diretamente a classe de e-mail.
+
+### 4. Organização proposta
+
+Inverter quem inicia a conversa. Hoje a devolução **chama** o e-mail e espera. Na proposta, ela apenas **anuncia** que algo aconteceu, e quem se interessa reage.
+
+```
+Usuário devolve → registra devolução → publica "BicicletaDevolvida"
+                                                ↓
+                                    (devolução já terminou)
+                                                ↓
+                             consumidor lê o evento e envia o e-mail
+```
+
+Três peças:
+
+- **Serviço de devolução** — encerra a viagem, libera a bicicleta, publica o evento. Não sabe quem escuta.
+- **Evento** — registro de fato consumado. É a interface estável entre os dois lados.
+- **Consumidor** — roda separado, envia o e-mail, tenta de novo se falhar.
+
+Dois cuidados: publicar o evento numa tabela dentro da mesma transação da devolução (para não sair e-mail de devolução revertida), e retentativa com espera crescente no consumidor.
+
+### 5. A devolução pode terminar antes da notificação?
+
+Sim, e é a intenção. Para o negócio, a devolução está concluída quando a bicicleta está registrada na estação e a viagem encerrada. O e-mail é consequência, não parte da operação. Em troca, a notificação vira eventual — mas o usuário já viu a confirmação na tela.
+
+### 6. Vantagens
+
+| Vantagem | Explicação |
+|---|---|
+| Disponibilidade | Devolução não depende mais do notificador (req. 11) |
+| Latência | A resposta não espera I/O externo (reqs. 9 e 10) |
+| Extensibilidade | Novos interessados no evento entram sem tocar na devolução |
+| Testabilidade | Testar devolução não exige servidor de e-mail |
+| Resiliência | Falha temporária vira retentativa, não erro |
+
+### 7. Custos e novos problemas
+
+- **Infraestrutura**: entra uma fila no sistema, mais um componente para operar e monitorar
+- **Entrega duplicada**: filas garantem entrega ao menos uma vez, então o consumidor precisa ser idempotente ou o usuário recebe dois e-mails
+- **Depuração**: o fluxo deixa de ser uma pilha de chamadas legível
+- **Consistência eventual**: existe uma janela entre devolver e notificar
+- **Falha silenciosa**: se o consumidor quebrar, ninguém percebe pela tela
+
+Troca-se uma falha **visível e bloqueante** por uma **invisível e não bloqueante**. Para notificação é a troca certa; para cobrança exigiria garantias mais fortes.
+
+### 8. Relação com os princípios
+
+**Low Coupling** — elimina o acoplamento temporal e o conhecimento ponto a ponto entre devolução e notificador.
+
+**Indirection** — o publicador de eventos é o intermediário; em vez de A chamar B, ambos falam com um terceiro.
+
+**Protected Variations** — o evento é a interface estável. Trocar e-mail por push, ou de provedor, não atravessa a fronteira.
+
+**SRP** — `DevolucaoService` volta a ter um motivo só para mudar: regras de devolução. Notificar é de outra classe.
+
+**DIP** — O domínio do sistema define as regras e interfaces de alto nível, desacoplando-se de detalhes de infraestrutura.
+
+---
+
+## Parte 9 — Avaliação com SOLID
+
+### Inventário do design
+
+**Entidades:** `Veiculo` (abstrata) → `Bicicleta`, `BicicletaEletrica`; `Estacao`; `Usuario`; `Reserva`; `Viagem`.
+
+**Interfaces do domínio:** `RepositorioVeiculos`, `RepositorioViagens`, `PublicadorEventos`, `PoliticaTarifaria`, `MeioDeIdentificacao`.
+
+**Serviços de aplicação:** `ConsultaService`, `ReservaService`, `DevolucaoService`, `AdministracaoService`.
+
+**Infraestrutura:** `RepositorioJdbc`, `PublicadorNaFila`, `ConsumidorNotificacao`, `ExpiradorDeReservas`, middleware de autorização.
+
+### Avaliação
+
+| Princípio | Atende? | Evidência no design | Problema que evita |
+|---|---|---|---|
+| **SRP** | Sim | Quatro serviços, um por grupo de casos de uso; `PoliticaTarifaria` separada de `Viagem`; notificação fora de `DevolucaoService`; persistência nos repositórios | Classe que muda por vários motivos independentes |
+| **OCP** | Sim | `podeSerRetirado()` polimórfico; `PoliticaTarifaria` e `MeioDeIdentificacao` como pontos de extensão (reqs. 12 e 13); novos consumidores de evento sem tocar na devolução | Editar código que já funciona a cada variante nova |
+| **LSP** | Sim, no que foi especificado | A regra dos 10% fica numa consulta cujo contrato é "responda se pode"; nenhum subtipo lança exceção nova; nenhum cliente usa `instanceof` | Subclasse que surpreende o cliente e força verificação de tipo |
+| **ISP** | Parcialmente | `PublicadorEventos` e `PoliticaTarifaria` têm um método cada; `nivelBateria` não exposto em `Veiculo` | Interface inchada com métodos que o cliente não usa |
+| **DIP** | Sim | As cinco interfaces pertencem ao domínio; a infraestrutura importa o domínio, nunca o contrário; permitiu trocar e-mail síncrono por fila sem alterar `DevolucaoService` | Regra de negócio presa a banco, framework e rede |
+
+### Ressalvas
+
+**ISP** — `RepositorioVeiculos` é o ponto de risco: se acumular consultas administrativas junto com busca por identificador, o `ConsultaService` passará a depender de métodos que não usa.
+
+**LSP** — a avaliação cobre apenas `podeSerRetirado()`. Devolução e tarifa ainda não foram especificadas por subtipo. **Não é possível avaliar completamente com as informações disponíveis.**
+
+---
+
+## Parte 10 — Proposta final de design
+
+### 1. Elementos principais
+
+**Entidades**
+
+| Elemento | Responsabilidade |
+|---|---|
+| `Veiculo` (abstrata) | Identificador, status, estação; decide se pode ser retirado |
+| `Bicicleta` / `BicicletaEletrica` | Regra própria de liberação (bateria ≥ 10%) |
+| `Estacao` | Localização e conjunto de veículos |
+| `Usuario` | Identidade e papel (comum ou administrador) |
+| `Reserva` | Prazo de validade; sabe se venceu e cancela a si mesma |
+| `Viagem` | Origem, destino, horários; encerra-se na devolução |
+
+**Interfaces do domínio**
+
+| Interface | Por que existe |
+|---|---|
+| `RepositorioVeiculos` / `RepositorioViagens` | Isolar o domínio do banco |
+| `PublicadorEventos` | Desacoplar a devolução da notificação (req. 11) |
+| `PoliticaTarifaria` | Formas de cobrança variadas (req. 13) |
+| `MeioDeIdentificacao` | QR, cartão e NFC (req. 12) |
+
+**Serviços de aplicação**
+
+| Serviço | Requisitos |
+|---|---|
+| `ConsultaService` | 1, 5, 9 — disponibilidade e histórico |
+| `ReservaService` | 2, 3, 7, 8 — reservar, retirar, expirar |
+| `DevolucaoService` | 4, 11 — devolver e publicar evento |
+| `AdministracaoService` | 6, 14, 15 — cadastro e ocorrências |
+
+### 2. Relações
+
+```
+        Controllers (HTTP)
+               ↓
+      Serviços de aplicação        coordenam casos de uso
+               ↓
+   Entidades + Interfaces          regras de negócio
+               ↑
+        Infraestrutura             implementa as interfaces
+```
+
+A seta de baixo aponta **para cima**: a infraestrutura depende do domínio, nunca o contrário.
+
+Entre entidades: `Estacao` 1—N `Veiculo`; `Usuario` 1—N `Reserva` e 1—N `Viagem`; `Reserva` 0..1—1 `Veiculo`; `Viagem` referencia veículo, estação de origem e de destino.
+
+### 3. Decisões de design
+
+#### Decisão 1 — Reserva por atualização condicional no banco
+
+- **Decisão:** `UPDATE veiculo SET status='RESERVADO' WHERE id=? AND status='DISPONIVEL'`. Quem alterar a linha vence; zero linhas afetadas significa que perdeu.
+- **Motivação:** `if (disponivel) reservar()` é check-then-act não atômico. Lock em memória não resolve, porque com balanceamento cada instância tem o seu.
+- **ASR:** requisito 7, e também o 8 (expiração disputa o mesmo recurso).
+- **GRASP:** Information Expert — a decisão fica onde o estado está.
+- **SOLID:** não se aplica diretamente; é decisão de concorrência.
+- **Trade-off:** ganha correção garantida; custa serialização por linha e obriga a reserva a ir ao primário, sem cache. Escopo estreito: só concorrem requisições pelo mesmo veículo.
+
+#### Decisão 2 — Separar caminho de leitura e de escrita
+
+- **Decisão:** consulta lê de cache ou réplica, com consistência eventual; reserva escreve no primário, com consistência forte.
+- **Motivação:** os requisitos 9 e 10 pedem cache; o 7 pede consistência forte. Os dois puxam em direções opostas.
+- **ASR:** requisitos 9, 10 e 7.
+- **GRASP:** Protected Variations.
+- **SOLID:** SRP — consultar e reservar mudam por motivos diferentes.
+- **Trade-off:** ganha latência e escala; custa mostrar ocasionalmente um veículo já reservado — erro recuperável.
+
+#### Decisão 3 — Devolução publica evento em vez de chamar o notificador
+
+- **Decisão:** `DevolucaoService` encerra a viagem e publica `VeiculoDevolvido`; um consumidor separado envia o e-mail.
+- **Motivação:** chamada síncrona cria acoplamento temporal. Se o e-mail falhar, a devolução falha e o usuário fica preso à bicicleta e à cobrança.
+- **ASR:** requisito 11.
+- **GRASP:** Low Coupling, Indirection, Protected Variations.
+- **SOLID:** SRP (devolver ≠ notificar) e DIP (o domínio define `PublicadorEventos`).
+- **Trade-off:** ganha disponibilidade e latência; custa uma fila a operar, exige consumidor idempotente e torna a depuração menos linear.
+
+#### Decisão 4 — Hierarquia polimórfica de veículos
+
+- **Decisão:** `Veiculo` abstrata com `podeSerRetirado()`; cada tipo sobrescreve. O único `if` de tipo fica na fábrica do repositório.
+- **Motivação:** a flag `eletrica` espalha condicionais, permite estados inválidos e não escala além de dois tipos.
+- **ASR:** não é ASR direto — qualidade interna que antecipa a extensão para patinetes.
+- **GRASP:** Polymorphism e Information Expert.
+- **SOLID:** OCP (tipo novo é classe nova) e LSP (a regra fica numa consulta, não numa ação).
+- **Trade-off:** ganha extensibilidade; custa uma classe por tipo. Vale porque a variação já é conhecida.
+
+#### Decisão 5 — Interfaces no domínio, implementações fora
+
+- **Decisão:** as cinco interfaces ficam no pacote do domínio; banco, fila e provedores ficam na infraestrutura.
+- **Motivação:** sem isso, a regra de negócio importa framework e banco, e testar exige subir infraestrutura.
+- **ASR:** requisitos 11, 12 e 13.
+- **GRASP:** Protected Variations e Indirection.
+- **SOLID:** DIP (a seta aponta para dentro) e OCP (a interface é o ponto de extensão).
+- **Trade-off:** ganha testabilidade e liberdade de trocar tecnologia; custa um arquivo de interface por dependência.
+
+#### Decisão 6 — Autorização centralizada com negação por padrão
+
+- **Decisão:** autenticação no middleware, autorização no serviço de aplicação. Operação sem regra explícita é negada.
+- **Motivação:** o requisito 15 é negativo — diz o que o sistema não pode permitir. Cada endpoint novo seria uma chance de esquecer, e o esquecimento é silencioso.
+- **ASR:** requisito 15.
+- **GRASP:** Protected Variations.
+- **SOLID:** SRP — autorização não se mistura com regra de negócio.
+- **Trade-off:** ganha garantia estrutural; custa passar contexto de segurança até a camada de aplicação.
+
+### O que ficou de fora, deliberadamente
+
+- **`Pagamento` como entidade** — só quando houver cobrança real; hoje `PoliticaTarifaria` calcula e a `Viagem` guarda o valor
+- **Padrão outbox** — entra quando eventos perdidos virarem problema medido
+- **Serviços separados para histórico e ocorrência** — absorvidos por `ConsultaService` e `AdministracaoService`
+- **CQRS formal** — a separação de leitura e escrita é de infraestrutura, não de modelo
+
+Num projeto real, a fila e a hierarquia de veículos também seriam adiadas. Estão aqui porque os requisitos 11 e 12 as tornam obrigatórias.
+
+---
+
+## Parte 11 — A decisão controversa
+
+**Decisão analisada:** como impedir que a mesma bicicleta seja reservada por dois usuários (req. 7), sem comprometer os 3.000 usuários simultâneos (req. 10).
+
+### 1. Solução escolhida — atualização condicional no banco
+
+Uma única instrução que testa e altera ao mesmo tempo:
+
+```sql
+UPDATE veiculo
+   SET status = 'RESERVADO', reservado_por = ?, expira_em = ?
+ WHERE id = ? AND status = 'DISPONIVEL'
+```
+
+Não há verificação prévia — a tentativa **é** a verificação. Quem alterar a linha vence; zero linhas afetadas significa que perdeu.
+
+### 2. Alternativas consideradas
+
+**A — Lock pessimista (`SELECT ... FOR UPDATE`):** abre transação, trava a linha, decide em Java, grava, fecha.
+
+**B — Lock distribuído (Redis):** como o sistema roda em várias instâncias, uma trava de Java não serve — cada servidor teria a sua. O lock ficaria fora, no Redis, com prazo de validade para não travar para sempre se um servidor cair.
+
+### 3. Vantagens e desvantagens
+
+| Opção | Vantagens | Desvantagens |
+|---|---|---|
+| **Escolhida** | Garantia vem do banco, sem componente novo; trava dura milissegundos e só na escrita; impossível esquecer de proteger; resolve o req. 8 pelo mesmo mecanismo | Obriga a reserva a ir ao primário, sem cache; parte da regra vive no SQL |
+| **A — pessimista** | Lógica em Java, mais legível; acomoda operações compostas | Trava aberta durante toda a transação; risco de deadlock; consome conexões do pool, que com 3.000 usuários vira gargalo |
+| **B — distribuído** | Funciona com estado espalhado por vários bancos; alivia o primário | Componente crítico a mais (se o Redis cai, a reserva para ou fica insegura); o lock pode expirar com a operação ainda rodando, gerando dois donos; duas fontes de verdade sobre quem tem a bicicleta |
+
+### 4. Por que o grupo escolheu
+
+**Problema:** `if (disponivel) reservar()` é check-then-act não atômico — duas requisições passam na verificação antes de qualquer escrita. Lock em memória não resolve, porque com balanceamento cada instância tem o seu.
+
+**Requisito:** o req. 7 é correção, não qualidade — não admite degradação. Mas os reqs. 9 e 10 impedem uma solução que serialize demais.
+
+**Decisão:** a atualização condicional atende o req. 7 com a **menor serialização possível** — uma linha, por milissegundos, só entre requisições pelo mesmo veículo. Reservas de veículos diferentes não se bloqueiam.
+
+O lock pessimista foi descartado por pagar custo maior (trava longa, deadlock, pressão no pool) para um problema que aqui é simples: uma linha, uma condição. O lock distribuído foi descartado por resolver um problema que não temos — o estado da bicicleta cabe inteiro numa linha de um banco, e o banco já dá essa garantia sozinho.
+
+**Consequências aceitas:**
+
+- A reserva sempre vai ao primário, sem cache. Aceitável porque a operação frequente é a consulta, que fica livre para usar cache.
+- Parte da regra vive no SQL. Mitigado encapsulando a instrução no repositório com nome expressivo (`reservarSeDisponivel`).
+- O usuário pode receber "não está mais disponível". Erro recuperável — basta escolher outro veículo.
+
+**Gatilho para revisar:** contenção real medida na mesma linha, ou o estado da reserva deixando de caber num único banco. Nenhuma das duas existe hoje.
+
