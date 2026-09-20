@@ -225,6 +225,7 @@ Depois podemos ter:
 
 - **DIP:** princípio de projeto.
 - **Injeção de dependência:** técnica para fornecer dependências externamente.
+>  DIP diz que a classe deve depender de abstrações. A injeção de dependência fornece uma implementação dessa abstração para a classe.
 
 Exemplo:
 

@@ -172,3 +172,5 @@ Depois responder:
 - Há algum ciclo entre os pacotes?
 - Há algum pacote com responsabilidades demais?
 
+
+
